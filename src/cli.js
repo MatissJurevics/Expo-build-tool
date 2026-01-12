@@ -1,3 +1,15 @@
+const fs = require("fs");
+const path = require("path");
+const { loadEnvFromPath } = require("./envLoader");
+const {
+  loadConfig,
+  resolveConfigPath,
+  resolveCredentialsPath,
+  readCredentials,
+  writeCredentials
+} = require("./configLoader");
+const { RemoteBuilder } = require("./remoteBuilder");
+const { logInfo, logError } = require("./logger");
 const { handleInitCommand } = require("./init");
 
 // ... (keep usage help separate if needed, but integration is key)
@@ -23,7 +35,145 @@ Subcommands:
 `);
 }
 
-// ...
+
+function printConfigHelp() {
+  console.log(`
+Usage: htzbuild config [options]
+
+Options:
+  --config <path>       Save credentials to a custom config file (default: ~/.config/htzbuild/credentials.json)
+  --credentials-file <path> Save credentials to a custom config file
+  --token <value>       Hetzner API token (HCLOUD_TOKEN)
+  --ssh-key <value>     Hetzner SSH key name
+  --location <value>    Hetzner location (HETZNER_LOCATION)
+  --server-type <value> Hetzner server type (HETZNER_SERVER_TYPE)
+  -h, --help            Show this help message
+
+At least one credential flag is required. Saved credentials override matching values from the .env folder.
+`);
+}
+
+function parseConfigCommandArgs(args) {
+  const options = {
+    help: false,
+    credentialsFile: null,
+    token: null,
+    sshKey: null,
+    location: null,
+    serverType: null
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
+    }
+
+    if (
+      arg === "--config" ||
+      arg === "-c" ||
+      arg === "--credentials-file" ||
+      arg === "--credentials-path"
+    ) {
+      const value = args[index + 1];
+      if (value && !value.startsWith("-")) {
+        options.credentialsFile = value;
+        index += 1;
+        continue;
+      }
+      throw new Error(`Missing config file after ${arg}`);
+    }
+
+    if (arg === "--token") {
+      const value = args[index + 1];
+      if (value && !value.startsWith("-")) {
+        options.token = value;
+        index += 1;
+        continue;
+      }
+      throw new Error(`Missing token after ${arg}`);
+    }
+
+    if (arg === "--ssh-key") {
+      const value = args[index + 1];
+      if (value && !value.startsWith("-")) {
+        options.sshKey = value;
+        index += 1;
+        continue;
+      }
+      throw new Error(`Missing ssh key name after ${arg}`);
+    }
+
+    if (arg === "--location") {
+      const value = args[index + 1];
+      if (value && !value.startsWith("-")) {
+        options.location = value;
+        index += 1;
+        continue;
+      }
+      throw new Error(`Missing location after ${arg}`);
+    }
+
+    if (arg === "--server-type") {
+      const value = args[index + 1];
+      if (value && !value.startsWith("-")) {
+        options.serverType = value;
+        index += 1;
+        continue;
+      }
+      throw new Error(`Missing server type after ${arg}`);
+    }
+
+    throw new Error(`Unknown config option: ${arg}`);
+  }
+
+  return options;
+}
+
+async function handleConfigCommand(args) {
+  const options = parseConfigCommandArgs(args);
+  if (options.help) {
+    printConfigHelp();
+    return;
+  }
+
+  const credentials = {};
+  if (options.token) {
+    credentials.HCLOUD_TOKEN = options.token;
+  }
+  if (options.sshKey) {
+    credentials.HETZNER_SSH_KEY = options.sshKey;
+  }
+  if (options.location) {
+    credentials.HETZNER_LOCATION = options.location;
+  }
+  if (options.serverType) {
+    credentials.HETZNER_SERVER_TYPE = options.serverType;
+  }
+
+  if (!Object.keys(credentials).length) {
+    throw new Error(
+      "Provide at least one credential flag (--token, --ssh-key, --location, --server-type)."
+    );
+  }
+
+  const resolvedTarget = resolveCredentialsPath(options.credentialsFile);
+  const projectRoot = path.resolve(process.cwd());
+  if (
+    resolvedTarget === projectRoot ||
+    resolvedTarget.startsWith(`${projectRoot}${path.sep}`)
+  ) {
+    throw new Error(
+      "Credentials must be saved outside the project directory to avoid leaking secrets."
+    );
+  }
+
+  const savedPath = writeCredentials(options.credentialsFile, credentials);
+  logInfo(`Saved Hetzner credentials to ${savedPath}`);
+  logInfo("Subsequent runs will use these credentials instead of the .env folder.");
+}
 
 function parseRunArgs(args) {
   let profile = "preview";

@@ -43,12 +43,13 @@ class RemoteBuilder {
     this.profile = profile;
     this.env = env;
     this.options = options; // { dryRun, keepAliveOnError }
+    this.config = config || DEFAULT_CONFIG; // Moved up
     this.projectDir = process.cwd();
     this.buildOutputDir = path.join(this.projectDir, "build-output");
     this.serverName = `eas-builder-${Date.now()}`;
     this.serverType = env.HETZNER_SERVER_TYPE || "cpx52";
     this.location = env.HETZNER_LOCATION || "fsn1";
-    this.image = env.HCLOUD_IMAGE || this.config.image || DEFAULT_IMAGE;
+    this.image = env.HCLOUD_IMAGE || this.config.image || DEFAULT_IMAGE; // Now safe
     this.maxBuildDurationMs =
       Number(env.HETZNER_MAX_BUILD_MINUTES || DEFAULT_MAX_BUILD_MINUTES) *
       60 *
@@ -77,7 +78,7 @@ class RemoteBuilder {
     this.expoTokenLength = env.EXPO_TOKEN ? env.EXPO_TOKEN.length : 0;
     this.artifactName = null;
 
-    this.config = config || DEFAULT_CONFIG;
+    // this.config = config || DEFAULT_CONFIG; // Removed from here
     this.syncExcludes = this.config.syncExcludes || DEFAULT_CONFIG.syncExcludes;
     this.remoteProjectDir =
       this.config.remoteProjectDir || DEFAULT_CONFIG.remoteProjectDir;
@@ -147,7 +148,7 @@ class RemoteBuilder {
       `root@${this.serverIp}`,
       "bash",
       "-lc",
-      command
+      quoteShellArg(command)
     ];
 
     if (this.options.dryRun) {
