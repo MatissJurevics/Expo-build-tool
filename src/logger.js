@@ -1,35 +1,76 @@
-const ANSI = {
-  reset: "\u001b[0m",
-  blue: "\u001b[34m",
-  green: "\u001b[32m",
-  yellow: "\u001b[33m",
-  red: "\u001b[31m"
-};
+const ora = require("ora");
+const chalk = require("chalk");
 
-function formatMessage(levelLabel, color, message) {
-  console.log(`${color}[${levelLabel}]${ANSI.reset} ${message}`);
+let spinner = null;
+
+function stopSpinner(success = true) {
+  if (spinner) {
+    if (success) {
+      spinner.succeed();
+    } else {
+      spinner.fail();
+    }
+    spinner = null;
+  }
+}
+
+function startSpinner(text) {
+  stopSpinner(true); // Stop previous if exists
+  spinner = ora(text).start();
+}
+
+function updateSpinner(text) {
+  if (spinner) {
+    spinner.text = text;
+  } else {
+    spinner = ora(text).start();
+  }
 }
 
 function logInfo(message) {
-  formatMessage("INFO", ANSI.blue, message);
+  if (spinner) {
+    spinner.stop();
+    console.log(chalk.blue("ℹ") + " " + message);
+    spinner.start();
+  } else {
+    console.log(chalk.blue("ℹ") + " " + message);
+  }
 }
 
 function logSuccess(message) {
-  formatMessage("SUCCESS", ANSI.green, message);
+  if (spinner) {
+    spinner.succeed(message);
+    spinner = null;
+  } else {
+    console.log(chalk.green("✔") + " " + message);
+  }
 }
 
 function logWarn(message) {
-  formatMessage("WARN", ANSI.yellow, message);
+  if (spinner) {
+    spinner.stop();
+    console.log(chalk.yellow("⚠") + " " + message);
+    spinner.start();
+  } else {
+    console.log(chalk.yellow("⚠") + " " + message);
+  }
 }
 
 function logError(message) {
-  formatMessage("ERROR", ANSI.red, message);
+  if (spinner) {
+    spinner.fail(message);
+    spinner = null;
+  } else {
+    console.log(chalk.red("✖") + " " + message);
+  }
 }
 
 module.exports = {
   logInfo,
   logSuccess,
   logWarn,
-  logError
+  logError,
+  startSpinner,
+  updateSpinner,
+  stopSpinner
 };
-

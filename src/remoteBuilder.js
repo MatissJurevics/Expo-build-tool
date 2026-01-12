@@ -6,14 +6,17 @@ const {
   logInfo,
   logSuccess,
   logWarn,
-  logError
+  logError,
+  startSpinner,
+  updateSpinner,
+  stopSpinner
 } = require("./logger");
 const { DEFAULT_CONFIG } = require("./configLoader");
 const readline = require("readline");
 
 const DEFAULT_IMAGE = "ubuntu-24.04";
 const DEFAULT_MAX_BUILD_MINUTES = 60;
-const BUILD_POLL_INTERVAL_MS = 30000;
+const BUILD_POLL_INTERVAL_MS = 5000;
 
 function resolveHome(filePath) {
   if (!filePath) {
@@ -36,9 +39,10 @@ function quoteShellArg(value) {
 }
 
 class RemoteBuilder {
-  constructor(profile, env, config = DEFAULT_CONFIG) {
+  constructor(profile, env, config = DEFAULT_CONFIG, options = {}) {
     this.profile = profile;
     this.env = env;
+    this.options = options; // { dryRun, keepAliveOnError }
     this.projectDir = process.cwd();
     this.buildOutputDir = path.join(this.projectDir, "build-output");
     this.serverName = `eas-builder-${Date.now()}`;
@@ -98,6 +102,11 @@ class RemoteBuilder {
   }
 
   runCommandSync(command, options = {}) {
+    if (this.options.dryRun) {
+      logInfo(`[DRY-RUN] ${command}`);
+      return "";
+    }
+
     const mergedOptions = {
       env: this.env,
       encoding: "utf8",
@@ -108,6 +117,11 @@ class RemoteBuilder {
   }
 
   runSpawnSync(cmd, args, options = {}) {
+    if (this.options.dryRun) {
+      logInfo(`[DRY-RUN] ${cmd} ${args.join(" ")}`);
+      return { status: 0 };
+    }
+
     const mergedOptions = {
       env: this.env,
       encoding: "utf8",
@@ -135,6 +149,11 @@ class RemoteBuilder {
       "-lc",
       command
     ];
+
+    if (this.options.dryRun) {
+      logInfo(`[DRY-RUN] ssh ${sshArgs.slice(1).join(" ")}`);
+      return { status: 0, stdout: "", stderr: "" };
+    }
 
     const spawnOptions = {
       env: this.env,
@@ -165,10 +184,26 @@ class RemoteBuilder {
     }
 
     const cleanupHandler = () => {
-      if (!this.serverId) {
+      // If we are dry-running, there is no server to clean up, unless we mocked one?
+      // Assuming dry-run skips creation, so no ID.
+      if (!this.serverId && !this.options.dryRun) {
         return;
       }
-      logWarn(`Cleaning up server ${this.serverName} (ID: ${this.serverId})...`);
+
+      if (this.options.keepAliveOnError) {
+        logWarn("Skipping server cleanup due to --keep-alive-on-error.");
+        if (this.serverIp) {
+          logInfo(`Server IP: ${this.serverIp}`);
+        }
+        return;
+      }
+
+      if (this.options.dryRun) {
+        logInfo("[DRY-RUN] Would cleanup server.");
+        return;
+      }
+
+      console.log(`Cleaning up server ${this.serverName} (ID: ${this.serverId})...`);
       try {
         childProcess.spawnSync(
           "hcloud",
@@ -179,9 +214,9 @@ class RemoteBuilder {
             encoding: "utf8"
           }
         );
-        logSuccess("Server deleted");
+        console.log("Server deleted");
       } catch (error) {
-        logError("Failed to delete server during cleanup");
+        console.error("Failed to delete server during cleanup");
       }
     };
 
@@ -210,6 +245,7 @@ class RemoteBuilder {
     logInfo("==========================================");
     logInfo(`  Profile: ${this.profile}`);
     logInfo(`  Server:  ${this.serverType} @ ${this.location}`);
+    if (this.options.dryRun) logInfo("  (DRY RUN MODE)");
     logInfo("==========================================");
     logInfo("");
 
@@ -219,16 +255,27 @@ class RemoteBuilder {
     await this.waitForServer();
     await this.syncProject();
     await this.runBuild();
-    await this.monitorBuild();
-    this.retrieveArtifact();
+
+    if (!this.options.dryRun) {
+      await this.monitorBuild();
+      this.retrieveArtifact();
+    } else {
+      logInfo("[DRY-RUN] Skipping build monitor and artifact retrieval.");
+    }
 
     logSuccess("Build complete!");
-    logInfo(`Artifact location: ${path.join(this.buildOutputDir, this.artifactName)}`);
+    if (this.artifactName) {
+      logInfo(`Artifact location: ${path.join(this.buildOutputDir, this.artifactName)}`);
+    } else {
+      logInfo(`Artifact location: (none in dry-run)`);
+    }
     logInfo("");
   }
 
   checkPrerequisites() {
     logInfo("Checking prerequisites...");
+    // These checks should perhaps run even in dry-run? Or skip?
+    // Let's run them to valid environment unless explicitly skipped.
     this.ensureCommand("hcloud");
     this.ensureCommand("rsync");
     this.ensureCommand("ssh");
@@ -236,7 +283,9 @@ class RemoteBuilder {
 
     if (!this.env.HCLOUD_TOKEN) {
       try {
-        this.runCommandSync("hcloud context active", { stdio: "pipe" });
+        if (!this.options.dryRun) {
+          this.runCommandSync("hcloud context active", { stdio: "pipe" });
+        }
       } catch {
         throw new Error(
           "HCLOUD_TOKEN not set and no active hcloud context found"
@@ -265,64 +314,6 @@ class RemoteBuilder {
     }
   }
 
-  async createServer() {
-    logInfo(`Creating server: ${this.serverName} (${this.serverType} in ${this.location})...`);
-    const sshKeyName = this.env.HETZNER_SSH_KEY || this.getFirstSshKey();
-    if (!sshKeyName) {
-      throw new Error("No SSH key found. Add one with hcloud ssh-key create");
-    }
-
-    logInfo(`Using SSH key: ${sshKeyName}`);
-    const hcloudArgs = [
-      "server",
-      "create",
-      "--name",
-      this.serverName,
-      "--type",
-      this.serverType,
-      "--image",
-      this.image,
-      "--location",
-      this.location,
-      "--ssh-key",
-      sshKeyName,
-      "--user-data-from-file",
-      this.cloudInitFile,
-      "--poll-interval",
-      "1s"
-    ];
-    hcloudArgs.push("--output", "json");
-
-    const hcloudResult = childProcess.spawnSync("hcloud", hcloudArgs, {
-      env: this.env,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    if (hcloudResult.status !== 0) {
-      const message =
-        hcloudResult.stderr && hcloudResult.stderr.toString().trim();
-      throw new Error(message || "Failed to create server");
-    }
-
-    const parsed = JSON.parse(hcloudResult.stdout.toString().trim());
-    const createdServer = parsed.server;
-    if (!createdServer) {
-      throw new Error("Unable to parse server creation response");
-    }
-
-    this.serverId = String(createdServer.id);
-    const publicNet = createdServer.public_net;
-    if (!publicNet || !publicNet.ipv4 || !publicNet.ipv4.ip) {
-      throw new Error("Unable to determine server IP address");
-    }
-    this.serverIp = publicNet.ipv4.ip;
-
-    logSuccess(`Server created: ${this.serverIp} (ID: ${this.serverId})`);
-  }
-
-
-
   async askQuestion(query) {
     const rl = readline.createInterface({
       input: process.stdin,
@@ -338,6 +329,10 @@ class RemoteBuilder {
   }
 
   async ensureSshKey() {
+    if (this.options.dryRun) {
+      return "dry-run-key";
+    }
+
     // 1. Check if configured via env
     if (this.env.HETZNER_SSH_KEY) {
       logInfo(`Using configured SSH key: ${this.env.HETZNER_SSH_KEY}`);
@@ -357,7 +352,7 @@ class RemoteBuilder {
         return "buildkey";
       }
     } catch {
-      // Ignore error, assume no keys or auth failure (which createServer will catch later)
+      // Ignore error
     }
 
     // 3. Prompt user
@@ -389,7 +384,6 @@ class RemoteBuilder {
       { env: this.env, stdio: "inherit" }
     );
 
-    // Update the instance's key file path if we just generated the default one
     this.sshKeyFile = defaultKeyPath;
 
     return "buildkey";
@@ -398,8 +392,15 @@ class RemoteBuilder {
   async createServer() {
     const sshKeyName = await this.ensureSshKey();
 
-    logInfo(`Creating server: ${this.serverName} (${this.serverType} in ${this.location})...`);
-    logInfo(`Using SSH key: ${sshKeyName}`);
+    startSpinner(`Creating server: ${this.serverName} (${this.serverType} in ${this.location})...`);
+
+    if (this.options.dryRun) {
+      this.serverIp = "1.2.3.4";
+      this.serverId = "123456";
+      stopSpinner();
+      logInfo(`[DRY-RUN] Server created: ${this.serverIp}`);
+      return;
+    }
 
     const hcloudArgs = [
       "server",
@@ -428,6 +429,7 @@ class RemoteBuilder {
     });
 
     if (hcloudResult.status !== 0) {
+      stopSpinner(false);
       const message =
         hcloudResult.stderr && hcloudResult.stderr.toString().trim();
       throw new Error(message || "Failed to create server");
@@ -436,12 +438,14 @@ class RemoteBuilder {
     const parsed = JSON.parse(hcloudResult.stdout.toString().trim());
     const createdServer = parsed.server;
     if (!createdServer) {
+      stopSpinner(false);
       throw new Error("Unable to parse server creation response");
     }
 
     this.serverId = String(createdServer.id);
     const publicNet = createdServer.public_net;
     if (!publicNet || !publicNet.ipv4 || !publicNet.ipv4.ip) {
+      stopSpinner(false);
       throw new Error("Unable to determine server IP address");
     }
     this.serverIp = publicNet.ipv4.ip;
@@ -449,21 +453,13 @@ class RemoteBuilder {
     logSuccess(`Server created: ${this.serverIp} (ID: ${this.serverId})`);
   }
 
-  getFirstSshKey() {
-    // Deprecated but kept for now if needed, though unused by new logic
-    try {
-      const listing = childProcess.execSync(
-        "hcloud ssh-key list -o noheader -o columns=name",
-        { env: this.env, encoding: "utf8" }
-      );
-      return listing.split("\n")[0].trim() || null;
-    } catch {
-      return null;
-    }
-  }
-
   async waitForServer() {
-    logInfo("Waiting for SSH access...");
+    if (this.options.dryRun) {
+      logInfo("[DRY-RUN] Waiting for server...");
+      return;
+    }
+
+    startSpinner("Waiting for SSH access...");
     const maxAttempts = 60;
     let attempt = 0;
 
@@ -473,18 +469,18 @@ class RemoteBuilder {
         break;
       }
       attempt += 1;
-      process.stdout.write(".");
       await this.delay(5000);
     }
-    process.stdout.write("\n");
 
     if (attempt === maxAttempts) {
+      stopSpinner(false);
       throw new Error("Timeout waiting for SSH access");
     }
 
-    logInfo("Waiting for cloud-init to finish...");
+    updateSpinner("Waiting for cloud-init to finish...");
     this.runSSHCommand("cloud-init status --wait");
-    logInfo("Waiting for apt locks...");
+
+    updateSpinner("Waiting for apt locks...");
     this.runSSHCommand(
       "while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do echo 'Waiting for apt lock...'; sleep 5; done"
     );
@@ -493,7 +489,12 @@ class RemoteBuilder {
   }
 
   async syncProject() {
-    logInfo("Syncing project files to server...");
+    if (this.options.dryRun) {
+      logInfo("[DRY-RUN] Syncing project...");
+      return;
+    }
+
+    startSpinner("Syncing project files to server...");
     const remoteDir = `${this.remoteProjectDir.replace(/\/$/, "")}/`;
     const rsyncArgs = [
       "-avz",
@@ -510,10 +511,9 @@ class RemoteBuilder {
   }
 
   async runBuild() {
-    logInfo(
-      `Running eas build --local --platform android --profile ${this.profile}...`
-    );
-    logInfo("This may take 10-20 minutes...");
+    startSpinner(`Preparing build (${this.profile})...`);
+
+    if (!this.options.dryRun) logInfo("This may take 10-20 minutes...");
 
     const expoTokenBase64 = this.env.EXPO_TOKEN
       ? Buffer.from(this.env.EXPO_TOKEN, "utf8").toString("base64")
@@ -522,6 +522,7 @@ class RemoteBuilder {
     const outputTemplate =
       this.artifactMapping[this.profile] || this.artifactMapping.default;
     if (!outputTemplate) {
+      stopSpinner(false);
       throw new Error("No artifact path defined for this profile");
     }
 
@@ -582,6 +583,14 @@ class RemoteBuilder {
     );
 
     const script = scriptLines.join("\n");
+    stopSpinner();
+
+    if (this.options.dryRun) {
+      logInfo("[DRY-RUN] Remote script:");
+      console.log(script);
+      return;
+    }
+
     this.runSSHCommand(script, { captureOutput: false });
   }
 
@@ -619,7 +628,6 @@ class RemoteBuilder {
           throw new Error("Remote build timed out");
         }
 
-        // Check for completion marker
         const statusResult = this.runSSHCommand(
           `test -f ${quoteShellArg(this.remoteStatusFile)}`,
           { allowFailure: true }
@@ -630,14 +638,12 @@ class RemoteBuilder {
           break;
         }
 
-        // Check if processes are still alive
         const processes = this.runSSHCommand(
           "pgrep -f 'eas-cli build' >/dev/null || pgrep -f 'npm install' >/dev/null || pgrep -f 'gradlew' >/dev/null",
           { allowFailure: true }
         );
 
         if (processes.status !== 0) {
-          // Double check for artifact just in case of race condition
           let artifactCheck = false;
           for (const candidate of this.artifactCandidates) {
             const remoteCandidate = this.interpolateTemplate(candidate);
@@ -660,17 +666,15 @@ class RemoteBuilder {
           throw new Error("Remote build failed");
         }
 
-        // Poll status every 5 seconds
-        await this.delay(5000);
+        await this.delay(BUILD_POLL_INTERVAL_MS);
       }
     } finally {
-      // Clean up the tail process
       tailProcess.kill();
     }
   }
 
   retrieveArtifact() {
-    logInfo("Retrieving build artifact...");
+    startSpinner("Retrieving build artifact...");
     fs.mkdirSync(this.buildOutputDir, { recursive: true });
 
     for (const candidate of this.artifactCandidates) {
@@ -688,6 +692,7 @@ class RemoteBuilder {
       }
     }
 
+    stopSpinner(false);
     throw new Error("No build artifact was found on the remote server");
   }
 
@@ -730,4 +735,3 @@ class RemoteBuilder {
 }
 
 module.exports = { RemoteBuilder };
-
