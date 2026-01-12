@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 function isObject(value) {
@@ -75,5 +76,47 @@ function loadConfig(projectDir, configFileOption) {
   return deepMerge(DEFAULT_CONFIG, parsed);
 }
 
-module.exports = { loadConfig, DEFAULT_CONFIG };
+function resolveCredentialsPath(credentialsFileOption) {
+  if (credentialsFileOption && path.isAbsolute(credentialsFileOption)) {
+    return credentialsFileOption;
+  }
+
+  if (credentialsFileOption) {
+    return path.resolve(process.cwd(), credentialsFileOption);
+  }
+
+  return path.join(os.homedir(), ".config", "htzbuild", "credentials.json");
+}
+
+function readCredentials(credentialsFileOption) {
+  const credentialsPath = resolveCredentialsPath(credentialsFileOption);
+  if (!fs.existsSync(credentialsPath)) {
+    return { credentialsPath, credentials: {} };
+  }
+
+  try {
+    const contents = fs.readFileSync(credentialsPath, "utf8");
+    const parsed = JSON.parse(contents);
+    return { credentialsPath, credentials: parsed };
+  } catch (error) {
+    throw new Error(`Failed to read credentials file ${credentialsPath}: ${error.message}`);
+  }
+}
+
+function writeCredentials(credentialsFileOption, overrides = {}) {
+  const { credentialsPath, credentials } = readCredentials(credentialsFileOption);
+  const merged = { ...credentials, ...overrides };
+  fs.mkdirSync(path.dirname(credentialsPath), { recursive: true });
+  fs.writeFileSync(credentialsPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  return credentialsPath;
+}
+
+module.exports = {
+  loadConfig,
+  DEFAULT_CONFIG,
+  resolveConfigPath,
+  resolveCredentialsPath,
+  readCredentials,
+  writeCredentials
+};
 

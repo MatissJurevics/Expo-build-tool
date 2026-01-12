@@ -51,6 +51,10 @@ Use `--env-folder` if you keep your environment in a different location:
 htzbuild --env-folder config/env
 ```
 
+## Saved Hetzner Credentials
+
+When you prefer not to store Hetzner secrets in `.env`, run `htzbuild config` with the appropriate flags to persist them in `~/.config/htzbuild/credentials.json` (or another path you pass to `--config`/`--credentials-file`). Supply at least one of `--token`, `--ssh-key`, `--location`, or `--server-type`; the CLI loads these credentials before a build, overrides matching `.env` values, and still runs even if the `.env` folder is missing. Call `htzbuild config --help` for the available flags.
+
 ## Usage
 
 Run the CLI from the root of the project you want to build:
