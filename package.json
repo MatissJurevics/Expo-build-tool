@@ -15,7 +15,8 @@
     "htzbuild.config.example.json"
   ],
   "scripts": {
-    "cli": "node ./bin/htzbuild"
+    "cli": "node ./bin/htzbuild",
+    "test": "jest"
   },
   "engines": {
     "node": ">=20"
