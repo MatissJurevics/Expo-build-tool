@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { loadEnvFromFolder } = require("./envLoader");
+const { loadEnvFromPath } = require("./envLoader");
 const {
   loadConfig,
   resolveConfigPath,
@@ -238,20 +238,17 @@ async function runCli(argv) {
     (value) => value !== undefined && value !== null && value !== ""
   );
 
-  const envDirectory = path.resolve(process.cwd(), envFolder);
+  const envPath = path.resolve(process.cwd(), envFolder);
 
   let loadedEnv = {};
-  const envDirExists =
-    fs.existsSync(envDirectory) && fs.statSync(envDirectory).isDirectory();
-
-  if (envDirExists) {
-    logInfo(`Loading environment from ${envDirectory}`);
-    loadedEnv = loadEnvFromFolder(envDirectory);
+  if (fs.existsSync(envPath)) {
+    logInfo(`Loading environment from ${envPath}`);
+    loadedEnv = loadEnvFromPath(envPath);
   } else if (!hasSavedCredentials) {
-    throw new Error(`Env folder not found: ${envDirectory}`);
+    throw new Error(`Env path not found: ${envPath}`);
   } else {
     logInfo(
-      `Env folder not found (${envDirectory}); using saved credentials from ${credentialsPath}`
+      `Env path not found (${envPath}); using saved credentials from ${credentialsPath}`
     );
   }
 

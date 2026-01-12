@@ -22,7 +22,8 @@ const DEFAULT_CONFIG = {
     "export ANDROID_SDK_ROOT=/opt/android-sdk",
     "export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools"
   ],
-  buildCommand: "npx eas-cli build --local --platform android --profile \"$PROFILE\" --non-interactive --output $OUTPUT_FILE"
+  buildCommand: "npx eas-cli build --local --platform android --profile \"$PROFILE\" --non-interactive --output $OUTPUT_FILE",
+  image: "ubuntu-24.04"
 };
 
 function deepMerge(base, overrides) {
